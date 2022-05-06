@@ -1,0 +1,233 @@
+Wallace Session 2021-07-13
+Erica Johnson
+Cloud Forest VCF thresholded: Carso Huasteco
+================
+
+Please find below the R code history from your *Wallace* v1.9.0 session.
+### Package installation
+
+Wallace uses the following R packages that must be installed and loaded
+before starting.
+
+```{r}
+library(spocc)
+library(spThin)
+library(dismo)
+library(rgeos)
+library(raster)
+library(ENMeval)
+library(wallace)
+```
+
+## Analysis for *Cloud forest* (Cf)
+
+User CSV path with occurrence data. If the CSV file is not in the
+current workspace, change to the correct file path
+(e.g. “/Users/darwin/Documents/occs/”).
+
+```{r}
+# NOTE: provide the folder path of the .csv file
+occs_path <- "data/OccData/VCF_thresholded/CarsoHuasteco"
+occs_path <- file.path(occs_path, "CF_Occ_VCF100.csv")
+# get a list of species occurrence data
+userOccs_Cf <- occs_userOccs(
+  txtPath = occs_path, 
+  txtName = "CF_Occ_VCF100.csv", 
+  txtSep = ",", 
+  txtDec = ".")
+occs_Cf <- userOccs_Cf$Cloud_forest$cleaned
+```
+
+### Obtain environmental data
+
+Using user-specified variables.
+
+```{r}
+## Specify the directory with the environmental variables
+dir_envs_Cf <- "data/Env/Env_CarsoHuasteco"
+envs_path <- file.path(dir_envs_Cf, dir(dir_envs_Cf, pattern = ".tif$"))
+# Create environmental object (**)
+envs_Cf <- envs_userEnvs(
+  rasPath = envs_path,
+  rasName = dir(dir_envs_Cf, pattern = ".tif$"),
+  doBrick = FALSE)
+occs_xy_Cf <- occs_Cf[c('longitude', 'latitude')]
+occs_vals_Cf <- as.data.frame(raster::extract(envs_Cf, occs_xy_Cf))
+# remove occurrence records with NA environmental values
+occs_Cf <- occs_Cf[!(rowSums(is.na(occs_vals_Cf)) > 1), ]
+# also remove variable value rows with NA environmental values
+occs_vals_Cf <- na.omit(occs_vals_Cf)
+# add columns for env variable values for each occurrence record
+occs_Cf <- cbind(occs_Cf, occs_vals_Cf)
+```
+
+### Process environmental data
+
+Sampling the entire available environmental background using a “point buffers” method with a 0.5 degree buffer.
+
+```{r}
+# Generate background extent 
+bgExt_Cf <- penvs_bgExtent(
+  occs = occs_Cf,
+  bgSel = "point buffers",
+  bgBuf = 0.5)
+# Mask environmental data to provided extent
+bgMask_Cf <- penvs_bgMask(
+  occs = occs_Cf,
+  envs = envs_Cf,
+  bgExt = bgExt_Cf)
+# Sample the full environmental background from the provided area
+bgSample_Cf <- penvs_bgSample(
+  occs = occs_Cf,
+  bgMask =  bgMask_Cf,
+  bgPtsNum = sum(!is.na(getValues(bgMask_Cf[[1]]))))
+# Extract values of environmental layers for each background point
+bgEnvsVals_Cf <- as.data.frame(raster::extract(bgMask_Cf,  bgSample_Cf))
+##Add extracted values to background points table
+bgEnvsVals_Cf <- cbind(scientific_name = paste0("bg_", "Cloud forest"), bgSample_Cf,
+                            occID = NA, year = NA, institution_code = NA, country = NA,
+                            state_province = NA, locality = NA, elevation = NA,
+                            record_type = NA, bgEnvsVals_Cf)
+```
+
+### Partition occurrence data
+
+Partition occurrences and background points for model training and
+validation using “spatial block”, a spatial partition method with an
+aggregation factor of 2.
+
+```{r}
+# R code to get partitioned data
+groups_Cf <- part_partitionOccs(
+  occs = occs_Cf ,
+  bg =  bgSample_Cf, 
+  method = "block",
+  bgMask = bgMask_Cf,
+  aggFact = 2) 
+```
+
+### Build and Evaluate Niche Model
+
+Generating a species distribution model using the maxent.jar algorithm
+as implemented in ENMeval V2.0 (with clamping = FALSE). For tuning using
+L, LQ, H, LQH feature classes and regularization multipliers in the 1, 5
+range increasing by 1. Using a total of 1 categorical predictor
+variables.
+
+```{r}
+# Run maxent model for the selected species
+# , 'LQ','H','LQH'
+model_Cf <- model_maxent(
+  occs = occs_Cf,
+  bg = bgEnvsVals_Cf,
+  user.grp = groups_Cf, 
+  bgMsk = bgMask_Cf,
+  rms = c(2.5, 2.5), 
+  rmsStep = 0.5,
+  fcs = c('L'),
+  clampSel = TRUE,
+  algMaxent = "maxnet",
+  catEnvs = "Soil",
+  parallel = TRUE,
+  numCores = 4)
+```
+
+```{r}
+#exporting ENMeval results
+dir_eval <- "Outputs/EvalTbl/CarsoHuasteco"
+write.csv(model_Cf@results, paste(dir_eval, "CF_VCF100_CH.csv"))
+```
+
+### Visualize
+
+Generate a map of the Maxent generated model with no threshold (cloglog).
+
+```{r}
+# Select current model and obtain raster prediction
+m_Cf <- model_Cf@models[["fc.L_rm.2.5"]]
+predSel_Cf <- predictMaxnet(m_Cf, bgMask_Cf, type = "cloglog", clamp = TRUE)
+```
+
+## Calculating model thresholds
+
+Calculating the minimum training presence and 10 pct threshold. 
+
+```{r}
+pred_vals_Cf <- raster::extract(predSel_Cf, occs_xy_Cf)
+
+MTP <- min(na.omit(pred_vals_Cf))
+pct10 <-  rev(sort(pred_vals_Cf))[(ceiling(length(pred_vals_Cf) * 0.9))]
+
+MTP
+pct10
+```
+
+## Project model
+
+Projecting the model to a new user provided area
+
+```{r}
+# Loading the Carso Huasteco shapefile and defining it as the projection area
+proj_path <- "data"
+proj_userExt_Cf <- rgdal::readOGR(file.path(proj_path, "CarsoHuasteco.shp"), 
+                                  layer = "CarsoHuasteco")
+  
+
+# Create object of projection variables
+projAreaEnvs_Cf <- envs_Cf
+# Generate a projection of the model to the desired area
+proj_area_Cf <- proj_area(
+  evalOut = model_Cf,
+  curModel = "fc.L_rm.2.5",
+  envs = projAreaEnvs_Cf , 
+  outputType = "cloglog",
+  alg = "maxnet",
+  clamp = TRUE,
+  pjExt = proj_userExt_Cf) 
+```
+Exporting the model projection raster
+```{r}
+out_path <- "Outputs/RasPreds/CarsoHuasteco"
+writeRaster(proj_area_Cf$projArea, 
+            paste(out_path, "CF_VCF100.tif", sep = "/"), format = "GTiff")
+```
+
+## Model Transfer 
+
+Transferring the model to the Gran Sierra Plegada
+
+```{r}
+# Loading the Gran Sierra Plegada shapefile and defining it as the projection area
+transf_path <- "data"
+transf_userExt <- rgdal::readOGR(file.path(proj_path, "SierraPlegada.shp"), layer = "SierraPlegada")
+  
+
+# Create object of projection variables
+dir_envs_transf <- "data/Env/Env_SierraPlegada"
+envs_transf_path <- file.path(dir_envs_transf, dir(dir_envs_transf, 
+                                                   pattern = ".tif$"))
+# Create environmental object (**)
+envs_transf <- envs_userEnvs(
+  rasPath = envs_transf_path,
+  rasName = dir(dir_envs_transf, pattern = ".tif$"),
+  doBrick = FALSE)
+```
+
+```{r}
+# Generate a projection of the model to the desired area
+transf_area_Cf <- proj_area(
+  evalOut = model_Cf,
+  curModel = "fc.L_rm.2.5",
+  envs = envs_transf, 
+  outputType = "cloglog",
+  alg = "maxnet",
+  clamp = TRUE,
+  pjExt = transf_userExt) 
+```
+
+Exporting the transferred model raster
+```{r}
+out_path <- "Outputs/Transfer"
+writeRaster(transf_area_Cf$projArea, 
+            paste(out_path, "CF_VCF100_CH2GSP.tif", sep = "/"), format = "GTiff")
+```
