@@ -59,13 +59,13 @@ FC.thresh <- function(enm, mask, out.dir){
   CFm[CFm == 0]<- NA
   
   # Reprojecting to match extent & resolution of ENMs
-  CFm <- terra::project(CFm, CF, method = "near")
+  CFm <- terra::project(CFm, CF, method = "bilinear")
   CFm <- terra::crop(CFm, CF)
   
   #Pine-oak forest threshold (=>40% Forest cover <=60%)
   POm <- mask >= 40
   POm[POm == 0]<- NA
-  POm <- terra::project(POm, PO, method = "near")
+  POm <- terra::project(POm, PO, method = "bilinear")
   POm <- terra::crop(POm, PO)
   
   # Masking the vegetation ENMs

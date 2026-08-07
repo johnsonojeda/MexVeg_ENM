@@ -76,7 +76,7 @@ ENM.area <- lapply(ENM.list, function (x){
   a <- sapply(seq_len(nlyr(x)), function(i){
     #Calculate area
     terra::global(!is.na(x[[i]]), 
-    "sum", na.rm = T)[,1] * prod(res(test.enm))/1e6
+    "sum", na.rm = T)[,1] * prod(res(x))/1e6
   })
   #Create a dataframe
   b <- data.frame(
